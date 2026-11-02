@@ -1,0 +1,342 @@
+{
+  "agent_id": "dsh-superagent",
+  "role": "主路由兼本地执行方：接收入口任务，拆解并派给 amoo / wb-invest / wb-review，收结果、对外回传；同时自己执行 GitHub/仓库/脚本/文件/跨层搬运类任务。",
+  "location": {
+    "host": "迷你主机（Windows）",
+    "pid": 23884,
+    "process": "dsh --profile superagent --no-open（node 进程；PID 会随重启变化，以 healthcheck 为准）",
+    "workspace_pattern": "C:/Users/hezheng/src/Niaaaa717/<ticket-name>（每个 ticket 独立 worktree）",
+    "control_plane": "GitHub Niaaaa717/Niaaaa717",
+    "data_plane": "D:/AgentShare",
+    "healthcheck": "GET http://127.0.0.1:3082/orchestrator/api/state，请求头 x-orchestrator-request: 1；HTTP 200 且 health.runtime.state=ready 为在线",
+    "tailscale": "不依赖；派活走 GitHub（控制面）与 D:/AgentShare（数据面）"
+  },
+  "intake": {
+    "control_plane": "GitHub 仓库 Niaaaa717/Niaaaa717：notifications + 已订阅 issue/PR thread",
+    "poll_interval_seconds": 60,
+    "poll_interval_rule": "每轮间隔取 max(GitHub x-poll-interval（默认 60s）、配置 pollSeconds（默认 60，最小 60））；2026-11-02 实测 state 接口为 next poll ≥ 60s",
+    "trigger_syntax": "@Niaaaa717",
+    "trigger_regex": "(?:^|[^a-zA-Z0-9_@])@Niaaaa717(?![a-zA-Z0-9_-])，大小写不敏感",
+    "trigger_requirement": "未被订阅的 issue/PR 上，评论必须出现 @Niaaaa717 才算 addressed 并被摄入；一旦某个 thread 已有 ticket（订阅），其后续评论不带 @ 也会送达并作为该 ticket 的上下文，不再要求提及",
+    "issue_stream": "实测配置：observeIssues=true，新开 issue 的正文在创建后直接摄入（不要求 @，当前 issue #12 即此路径）；observeComments=false，评论不由仓库扫描摄入，只走通知（提及）或已订阅 thread 轮询；observePulls=false、observeCi=false",
+    "idempotency_key": "确定性触发 ID = key('github-comment', comment.html_url, comment.id, updated_at) 的 32 位哈希（issue 正文为 key('github-issue', number)）；ticket 输入 ID = key('input', ticket_id, 'trigger', trigger_id)；worker 消息 requestId = assignment:<ticket_id> 或 assignment:<ticket_id>:<assignment_id>（消息 ID 由它派生）。代码中没有名为 request_id 的字段；#11 回执契约里的 request_id 目前是空串，尚无生成规则（见 open_questions）",
+    "duplicate_behavior": "同一触发 ID 再次到达返回 duplicate：直接丢弃，不执行、不重复建单、不重复回执。同一 issue 的新评论是新的触发 ID，按新触发处理；同一评论被编辑会改变 updated_at，产生新触发 ID。已有存活 ticket 时，新评论并入该 ticket 作为输入，不重复开单",
+    "data_plane": "D:/AgentShare/_TaskQueue/inbox/ 的 TASK-YYYYMMDD-NNN_短标题.json（12 个固定字段，状态由所在目录表示），详见 routing.task_envelope",
+    "context_channel": "D:/AgentShare/_PeerInbox 的 MSG-*.md 与 att_* 是可读上下文，不作为派活入口"
+  },
+  "capabilities": [
+    {
+      "type": "GitHub 读写",
+      "input": "仓库、issue/PR 编号、评论、review、CI 状态",
+      "output": "PR、issue 评论、review 线程回复；PR 创建后在源 issue 回执并附链接",
+      "eta": "分钟级（不含人工评审）"
+    },
+    {
+      "type": "本地代码与脚本执行",
+      "input": "仓库路径、脚本、文件路径",
+      "output": "分支与提交、PR、可复现的命令输出与验证记录",
+      "eta": "5-30 分钟"
+    },
+    {
+      "type": "跨层搬运",
+      "input": "issue 正文参数、GitHub 产出、D:/AgentShare 文件",
+      "output": "结果写入 D:/AgentShare/_PeerOutbox、从 _PeerInbox 读取他人产出、GitHub 与文件系统之间互相搬运",
+      "eta": "分钟级"
+    },
+    {
+      "type": "路由与收口",
+      "input": "入口任务（手机/本地/投资/审查/混合）",
+      "output": "拆单、按 routing.table 派给 amoo / wb-invest / wb-review、收结果、汇总回传",
+      "eta": "取决于下游"
+    },
+    {
+      "type": "回执与登记",
+      "input": "request_id、结果状态、产出链接",
+      "output": "#11 每条结果一条评论，首行 JSON {request_id,status,owner,summary,artifact,at}",
+      "eta": "分钟级"
+    },
+    {
+      "type": "技能包调用（ai-office-skills）",
+      "input": "任务文本 / 待审对象 / 待决策事项",
+      "output": "按技能清单（routing.skill_catalog）调用 task-ledger、execution-coach、通用决策助手、结构定位镜、rule-system-review",
+      "eta": "按技能"
+    }
+  ],
+  "delivery": {
+    "completion_receipt": "issue 评论：\"This is by an automated agent, not a human.\" + 已完成：[PR #N](实际链接) + 改了什么 + 验证方式 + 是否需人工合并（原文模板见 2026-11-02 的 #3/#7/#9 评论）",
+    "acknowledgement": "\"收到：<一句话动作>，完成后提交 PR 并说明改动点。\"（orchestrator_ack 自动回在原评论线程）",
+    "failure_receipt": "无固定模板（unknown）。失败/受阻时走 DSH 内部 blocked/failed 报告，仅在需要人决策时发一条简短说明；历史无失败回执样本。#11 回执契约的 status=failed 可作为新模板",
+    "pr_linkage": "PR 正文写\"关联 Issue #N\"，PR 创建后在源 issue 回一条含 PR 链接的评论；不使用 Closes/Fixes 关键字，因此合并不会自动关闭 issue（#3/#7/#9 在 PR 合并后仍 OPEN）",
+    "receipt_channel": "#11（Amoo 信箱，label amoo-inbox）：每条结果一条评论，首行一个 JSON 块 {request_id,status:done|failed|partial,owner,summary,artifact,at}；禁止写 token/密钥/密码明文",
+    "result_files": "数据面结果写 D:/AgentShare/_PeerOutbox；任务回执写 _TaskQueue/done 或 _TaskQueue/blocked"
+  },
+  "constraints": [
+    "不在任何位置写 token、密钥、密码明文；鉴权只写方式与存放位置",
+    "不动 D:/AgentShare 里已有任务文件，只读清单与内容",
+    "不代投资体系做投资裁决、不代审查方下结论",
+    "不装依赖、不改业务代码，除非任务明确要求",
+    "不使用 Tailscale 作为派活前提",
+    "PR 不自动合并：本部署由人合并（auto-merge 关闭）"
+  ],
+  "healthcheck": {
+    "check": "GET http://127.0.0.1:3082/orchestrator/api/state，请求头 x-orchestrator-request: 1",
+    "online_if": "HTTP 200 且 health.runtime.state=ready",
+    "degraded_if": "HTTP 200 但 health.* 任一 state 非 ready",
+    "down_if": "连接失败或超时",
+    "verified_at": "2026-11-02T16:24+08:00，PID 23884 在跑且接口返回 ready",
+    "note": "PID 会随重启变化，以接口探活为准"
+  },
+  "boundaries": {
+    "does_not_do": [
+      "不改 TR 正文、阈值、仓位、挂单",
+      "不替 wb-review 做审查结论，不替 wb-invest 做投资决策",
+      "不直接给 Amoo 或外部系统下命令（只投任务与回执）",
+      "不关闭 #11；不自动关闭任何 issue",
+      "不把私人内容（Feishu/个人消息）贴到 GitHub"
+    ],
+    "escalates_to": "图南（人）——涉及投资裁决、审查结论、权限/资源缺失、跨体系规则变更时"
+  },
+  "routing": {
+    "principle": "第一判任务落在哪层：必须在手机上完成→amoo；投资体系执行→wb-invest；审查/独立复核→wb-review；其余本地/GitHub/跨层/拆单收口→dsh-superagent。第二判在线与在册状态；第三判失败回退。派给谁只取 amoo / dsh-superagent / wb-invest / wb-review 四值。",
+    "assignees": {
+      "amoo": "统一入口兼执行主力；强项是手机原生操作、相册与文件、生活服务、剪映出片、支付宝相关。长期在册。",
+      "dsh-superagent": "主路由兼本地执行方；GitHub/仓库/脚本/文件/跨层搬运/拆单收口。长期在册。",
+      "wb-invest": "投资体系 WorkBuddy；长期在册，默认优先。",
+      "wb-review": "审查体系 WorkBuddy；阶段性在册，随时可能摘除，不能作为单点。",
+      "doubao-work": "临时运维，一个月后停用，不进长期路由表。"
+    },
+    "table": [
+      {"task_type": "手机原生操作/相册与文件/应用操作", "assigned_to": "amoo", "long_term": true, "fallback": "dsh-superagent 只接可离机的整理/归档，其余转图南"},
+      {"task_type": "生活服务/支付/支付宝相关", "assigned_to": "amoo", "long_term": true, "fallback": "图南（支付类不转其他 agent）"},
+      {"task_type": "手机端剪映出片/短视频制作", "assigned_to": "amoo", "long_term": true, "fallback": "图南"},
+      {"task_type": "入口、需求拆解、派活、收结果、对外回传", "assigned_to": "dsh-superagent", "long_term": true, "fallback": "amoo 临时兜底常规单；复杂单转图南"},
+      {"task_type": "GitHub/仓库/代码/PR/CI 操作", "assigned_to": "dsh-superagent", "long_term": true, "fallback": "wb-invest 仅可代本地脚本且无 GitHub 权限时不可代，转图南"},
+      {"task_type": "本地文件核验（路径/字节/sha1）、格式转换、批量整理", "assigned_to": "dsh-superagent", "long_term": true, "fallback": "wb-invest"},
+      {"task_type": "跨层搬运（GitHub↔D:/AgentShare、_PeerInbox/_PeerOutbox）", "assigned_to": "dsh-superagent", "long_term": true, "fallback": "人工（图南）"},
+      {"task_type": "投资体系执行：交易数据、执行手册、门禁、脚本、台账落盘", "assigned_to": "wb-invest", "long_term": true, "fallback": "dsh-superagent 只接机械执行/复算，投资裁决转图南"},
+      {"task_type": "投资体系审查/复核/留痕", "assigned_to": "wb-review", "long_term": false, "fallback": "wb-invest 自审并标注\"自审\"；关键裁决转图南"},
+      {"task_type": "独立第三方对抗式评审", "assigned_to": "wb-review", "long_term": false, "fallback": "图南（不转 wb-invest，避免自审）"},
+      {"task_type": "规则体系方法论审查（SOP/流程/规则体检）", "assigned_to": "wb-review", "long_term": false, "fallback": "wb-invest 按现成方法论执行"},
+      {"task_type": "多体系混合任务（手机+本地+投资）", "assigned_to": "dsh-superagent", "long_term": true, "fallback": "dsh-superagent 拆单后分派；入口层由 amoo 兜底"},
+      {"task_type": "临时运维/一次性排障", "assigned_to": "dsh-superagent", "long_term": true, "fallback": "amoo；一个月内可临时用 doubao-work（不进长期表）"},
+      {"task_type": "对外沟通（邮件/企微/公众号）", "assigned_to": "amoo", "long_term": true, "fallback": "图南"},
+      {"task_type": "需人拍板的决策/授权", "assigned_to": "dsh-superagent", "long_term": true, "fallback": "dsh-superagent 只准备材料并升级图南，不代拍"},
+      {"task_type": "任务队列投递/回执（数据面）", "assigned_to": "dsh-superagent", "long_term": true, "fallback": "人工（图南）"}
+    ],
+    "task_envelope": {
+      "authority": "D:/AgentShare/_TaskQueue/队列规则.md v1（元芳 2026-11-01）",
+      "file_name": "TASK-YYYYMMDD-NNN_短标题.json（NNN 当日递增，三名补零），同 id 同文件名",
+      "required_fields": {
+        "id": "string，与文件名一致",
+        "title": "string，一句话",
+        "created_at": "ISO 8601 带时区",
+        "from": "amoo|workbuddy|mail|dingtalk",
+        "intent": "string，一到两句要什么结果",
+        "requires_context": "local|cloud（第一判路由依据）",
+        "needs": "string，文件/系统/账号；无写 none",
+        "priority": "P0|P1|P2|P3",
+        "deadline": "ISO 8601 或 none",
+        "acceptance": "string，一句可判的完成标准",
+        "owner": "string，inbox 阶段为空",
+        "status": "inbox|doing|done|blocked，必须与所在目录一致"
+      },
+      "optional_fields": {
+        "result": "仅 done 时追加：产出摘要 + 绝对路径/URL",
+        "blocked_reason": "仅 blocked 时追加：卡点 + 需谁决策",
+        "notes": "任意阶段的追加记录：超时回收/重试时间；只追加不改写"
+      },
+      "field_discipline": "inbox 阶段只接受 12 个必填字段，不预填可选项；可选字段只在移入 done/blocked 时追加，避免 Syncthing 下改字段产生冲突副本。队列规则明令不加第 13 个字段；request_id 不写进 task.json，由回执/文件名承载。",
+      "status_authority": "数据面以\"文件在哪个目录\"为唯一状态源（inbox/doing/done/blocked），不改 status 字段；GitHub label 只是控制面镜像。",
+      "claim": "领单前先创建 doing/<task-id>.claim.<owner> 空文件；创建成功才算领到，失败则放弃；然后再把任务单移入 doing/。",
+      "request_id": "回执 JSON 的 request_id 建议 = 数据面 task id（TASK-YYYYMMDD-NNN）或控制面触发 ID；同一 request_id 幂等，重复回执只更新内容不新增条目。该规则待图南确认（见 open_questions）。"
+    },
+    "label_state_machine": {
+      "scope": "控制面 GitHub issue/PR 的状态镜像；数据面目录状态是权威，label 不替代目录。",
+      "labels": {
+        "amoo-inbox": "常驻标记，只用于 #11 Amoo 信箱，不作为状态，不关闭。",
+        "dsh:intake": "已收到、待评估/待拆单",
+        "dsh:doing": "已建单，执行中",
+        "dsh:blocked": "卡住，需人决策",
+        "dsh:done": "完成并已回执",
+        "dsh:failed": "失败，可重试"
+      },
+      "transitions": [
+        "（无 label）→ dsh:intake：入口任务被接受",
+        "dsh:intake → dsh:doing：拆单并派给执行方 / 开始本地执行",
+        "dsh:doing → dsh:done：有 PR/产出并已回执",
+        "dsh:doing → dsh:failed：执行失败且未自动恢复",
+        "dsh:doing → dsh:blocked：缺权限/资源或需人决策",
+        "dsh:blocked → dsh:doing：人给出决策或解除阻塞",
+        "dsh:failed → dsh:doing：重试（≤2 次）",
+        "dsh:failed → dsh:blocked：两次重试失败",
+        "dsh:done / dsh:blocked → dsh:doing：同一 thread 上人发来新的继续指令（已结束 ticket 被唤醒）"
+      ],
+      "terminal": "dsh:done 与 dsh:blocked 是暂时终态；不自动关闭 issue，#11 永不关闭。",
+      "current_status": "本次定稿定义；仓库现只新建 amoo-inbox 并应用到 #11，dsh:* 未创建，首次建单时再创建，避免无人维护的空 label。"
+    },
+    "retry_rules": {
+      "automatic_retry": "最多 2 次；同一 task id / request_id 沿用，重试记录写 notes。",
+      "after_two_failures": "移入 _TaskQueue/blocked/，写 blocked_reason，上报图南，不自行处置。",
+      "worker_side": "临时性失败（网络、CI 抖动、模型重试）由 DSH 内部恢复；代码或权限类失败不自动重试，直接 failed/blocked。",
+      "idempotent_replay": "同一触发 ID 重放不重复执行；同一 request_id 回执不新增第二条。"
+    },
+    "timeout_rules": {
+      "doing": "超过 deadline 且无更新 → 移回 inbox，notes 追加\"超时回收 + 时间\"，owner 清空。",
+      "blocked": "超过 48 小时 → 强制上报图南，不自行处置。",
+      "done": "满 30 天 → 移入 done/archive/，不删除。",
+      "github_ticket": "DSH ticket 侧无固定时长上限；阻塞以 blocked 报告 + 人决策处理。"
+    },
+    "cluster_registry": {
+      "status": "partial（1 份已登记，1 份 pending）",
+      "as_of": "2026-11-02T16:27+08:00",
+      "agents": [
+        {
+          "agent_id": "dsh-superagent",
+          "source": "本 manifest（agents/dsh-superagent/manifest.json）",
+          "status": "registered",
+          "availability": "long_term",
+          "role": "主路由兼本地执行方",
+          "intake": "GitHub Niaaaa717/Niaaaa717（@Niaaaa717）+ D:/AgentShare/_TaskQueue/inbox",
+          "delivery": "GitHub PR/评论 + D:/AgentShare/_PeerOutbox + _TaskQueue/done",
+          "healthcheck": "http://127.0.0.1:3082/orchestrator/api/state",
+          "fallback": "amoo（入口兜底）/ 图南（裁决）"
+        },
+        {
+          "agent_id": "wb-invest",
+          "source": "D:/AgentShare/_PeerOutbox/manifest-wb-invest.json",
+          "status": "pending",
+          "availability": "long_term（图南已确认，默认优先）",
+          "role": "投资体系 WorkBuddy（执行/体系方）",
+          "intake": "unknown（manifest 缺失）",
+          "delivery": "unknown（manifest 缺失）",
+          "healthcheck": "unknown（manifest 缺失）",
+          "fallback": "dsh-superagent 仅接机械执行，投资裁决转图南",
+          "note": "截至 2026-11-02T16:27+08:00 该文件不存在；未推测、未编造其内容。"
+        },
+        {
+          "agent_id": "wb-review",
+          "source": "D:/AgentShare/_PeerOutbox/manifest-wb-review.json",
+          "status": "registered",
+          "availability": "phased（阶段性在册，可能摘除）",
+          "role": "审查方：对投资体系做审查纠偏，不做投资动作、不改被审对象",
+          "location": "D:/worrkbuddy/Claw（双 r，实测非 D:/workbuddy）",
+          "intake": "D:/AgentShare/_TaskQueue/inbox + _PeerInbox（MSG-*.md）",
+          "delivery": "_PeerOutbox/MSG-YYYY-MM-DD-NNN_主题.md + 公共资料库/ + _TaskQueue/done 或 blocked",
+          "healthcheck": "_PeerOutbox 48h 内有件；P0 单 24h 内回执",
+          "fallback": "转人工图南；机械核验可转 dsh-superagent（判断不可代），若代验须标注\"仅机械核验\""
+        }
+      ],
+      "expected_fields_when_missing": [
+        "agent_id",
+        "role",
+        "location（工作区 + 数据面）",
+        "intake（队列/消息通道/格式/共享机制/风险）",
+        "capabilities[{type,input,output,eta}]",
+        "delivery（结论去向、正本、任务回执、blocked、格式）",
+        "constraints",
+        "healthcheck（alive/degraded/down 判据）",
+        "boundaries（does_not_do、prerequisites）",
+        "availability（phased / long_term）",
+        "fallback（离线转谁、哪些不可代）",
+        "open_questions",
+        "generated_at"
+      ]
+    },
+    "conflicts": [
+      {
+        "id": "C1",
+        "type": "收件目录重叠、方向语义不足",
+        "evidence": "manifest-wb-review.json 自述 intake.shared_with_invest=true；_PeerInbox=审查方收、_PeerOutbox=审查方发，投资体系账号方向相反；同一 Syncthing 目录靠\"角色对\"约定方向，不靠角色名。",
+        "impact": "加入 dsh-superagent 与 Amoo 后第三方无法判断件归谁，收件归属不明。",
+        "status": "已证实（wb-review 自述 risk）"
+      },
+      {
+        "id": "C2",
+        "type": "同一产出两方都声称负责",
+        "evidence": "wb-review 登记了\"交付物验收、规则—执行—台账对应性审查、对抗式评审\"等能力；wb-invest manifest 缺失，无法比对是否也声称审查职责。",
+        "impact": "可能重复审查或互相等待。",
+        "status": "待确认（wb-invest pending）"
+      },
+      {
+        "id": "C3",
+        "type": "公共资料库双写",
+        "evidence": "wb-review delivery.canonical_copy_to=D:/AgentShare/公共资料库/，partition 写\"共用正本区，双方均写\"。",
+        "impact": "同名正本可能产生冲突副本。",
+        "status": "已证实（wb-review manifest）"
+      },
+      {
+        "id": "C4",
+        "type": "任务队列共用、无收件方白名单",
+        "evidence": "_TaskQueue 按 requires_context 路由、不按发起人；入口与执行解耦后，谁写 inbox、谁可认领未按 agent 分区。",
+        "impact": "误领/无人认领。",
+        "status": "已证实（队列规则 v1；wb-review 已提 _Hub 与 inbox/<agent_id> 分区方案，未执行）"
+      },
+      {
+        "id": "C5",
+        "type": "工作区路径口径不一致",
+        "evidence": "wb-review location.workspace=D:/worrkbuddy/Claw（双 r）；任务书给 D:/workbuddy，实测为 WorkBuddy 应用安装目录。",
+        "impact": "按路径派活会失败或写错目录。",
+        "status": "待图南确认"
+      },
+      {
+        "id": "C6",
+        "type": "健康判据不一致",
+        "evidence": "wb-review 以 _PeerOutbox 48h 内有件为准；wb-invest 判据 unknown（manifest 缺失）。",
+        "impact": "无法用同一标准判在线/离线与回退。",
+        "status": "待确认"
+      }
+    ],
+    "skill_catalog": {
+      "repository": "Niaaaa717/ai-office-skills（公开仓库，默认分支 main）",
+      "note": "五个技能都在 github仓库内容-本机用/<技能目录>/SKILL.md；仓库根的 skills 是空内容文件，不是技能清单。以下按 SKILL.md 的 name/description 归纳。",
+      "skills": [
+        {
+          "name": "task-ledger（AI 任务账本）",
+          "purpose": "AI 自己执行多线复杂任务时的全局执行纪律：开工前列可验收清单、执行中滚动记账、浏览器看板实时显示进度、验收逐条对账。",
+          "entry": "github仓库内容-本机用/task-ledger/SKILL.md",
+          "suitable_for": "dsh-superagent / 各执行方 AI（自执行多线任务时）"
+        },
+        {
+          "name": "execution-coach（陪跑任务账本）",
+          "purpose": "用户自己的工作由 AI 分解路径、明确人机分工、看板管进度、反拖延陪跑到完成。",
+          "entry": "github仓库内容-本机用/execution-coach/SKILL.md",
+          "suitable_for": "人（图南/Amoo 用户侧）；不适合 agent 自执行任务"
+        },
+        {
+          "name": "通用决策助手",
+          "purpose": "把凭感觉的犹豫变成有纪律的决定：意图识别→分档（轻/中/重）→闸门/漏斗/铁律/预警/复盘，输出可复用决策记录。",
+          "entry": "github仓库内容-本机用/通用决策助手/SKILL.md",
+          "suitable_for": "人（图南）及需要决策留痕的 agent"
+        },
+        {
+          "name": "结构定位镜",
+          "purpose": "用 β（轨道/结构）×α（同轨道内超额）四象限判断行业、公司、岗位、城市的位置与走向，并给升 α 或换 β 的迁移路径。",
+          "entry": "github仓库内容-本机用/结构定位镜/SKILL.md",
+          "suitable_for": "人（战略/职业/行业判断）；不适合纯事实查询与实时行情交易决策"
+        },
+        {
+          "name": "rule-system-review（规则体系审查方法论）",
+          "purpose": "对规则系统/SOP/自动化流程群做质量门禁：系统性自查 + 两门禁，只产出改进候选（F-list），不直改规则、不触发执行。",
+          "entry": "github仓库内容-本机用/rule-system-review/SKILL.md",
+          "suitable_for": "wb-review（审查方）/ 规则 owner"
+        }
+      ]
+    }
+  },
+  "cross_layer": {
+    "read_issue_body_params": "能 —— issue/PR 正文随触发带入；worker 可用 gh 或 orchestrator_read github/issues/<n> 读取正文与评论",
+    "write_peer_outbox": "能 —— 已实测：2026-11-02T16:24+08:00 向 D:/AgentShare/_PeerOutbox 写入探针文件成功并已清理",
+    "read_peer_inbox": "能 —— 已实测：读取 D:/AgentShare/_PeerInbox 文件清单（144 个文件），MSG-*.md 与 att_* 可解析",
+    "write_taskqueue": "能（但本次任务只读，未写既有任务文件）",
+    "mechanism": "本机文件系统直接访问 D:/AgentShare，不依赖 Tailscale；Syncthing 负责双机同步"
+  },
+  "open_questions": [
+    "request_id 生成规则未定：#11 模板目前是空串。建议 request_id = 数据面 task id 或控制面触发 ID，需图南拍板。",
+    "#11 实际没有 amoo-inbox label，仓库也没有该 label（任务书写\"label amoo-inbox\"与现状不符）；本次已新建并应用，待确认命名。",
+    "manifest-wb-invest.json 截至 2026-11-02T16:27+08:00 不存在，其 intake/delivery/healthcheck/fallback 全部 unknown；需 wb-invest 自检落盘后补登记并核对 C2/C6。",
+    "D:/workbuddy 与 D:/worrkbuddy（双 r）的规范关系：是路径变更还是笔误？不确认会影响派活与 manifest location 口径。",
+    "dsh:* 状态 label 是否要真正创建并用于 issue？本次只定义，不创建，避免空 label 无人维护。",
+    "wb-review 阶段性在册、可随时摘除：摘除后审查类任务的最终兜底是否直接转图南（本表默认如此）。",
+    "wb-review 提出的 _Hub/to-<agent_id>/ 与 _TaskQueue/inbox/<agent_id>/ 分区方案是否采纳？采纳需动数据面目录，超出本次\"不动已有任务文件\"的授权。"
+  ]
+}
