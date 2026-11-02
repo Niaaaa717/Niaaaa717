@@ -4,7 +4,7 @@
   "location": {
     "host": "迷你主机（Windows）",
     "pid": 23884,
-    "process": "node C:/Users/hezheng/.dsh-migrate/dsh-cli/.../dsh/lib/bin.js --profile superagent --no-open",
+    "process": "dsh --profile superagent --no-open（node 进程；PID 会随重启变化，以 healthcheck 为准）",
     "workspace_pattern": "C:/Users/hezheng/src/Niaaaa717/<ticket-name>（每个 ticket 独立 worktree）",
     "control_plane": "GitHub Niaaaa717/Niaaaa717",
     "data_plane": "D:/AgentShare",
@@ -18,6 +18,7 @@
     "trigger_syntax": "@Niaaaa717",
     "trigger_regex": "(?:^|[^a-zA-Z0-9_@])@Niaaaa717(?![a-zA-Z0-9_-])，大小写不敏感",
     "trigger_requirement": "未被订阅的 issue/PR 上，评论必须出现 @Niaaaa717 才算 addressed 并被摄入；一旦某个 thread 已有 ticket（订阅），其后续评论不带 @ 也会送达并作为该 ticket 的上下文，不再要求提及",
+    "issue_stream": "实测配置：observeIssues=true，新开 issue 的正文在创建后直接摄入（不要求 @，当前 issue #12 即此路径）；observeComments=false，评论不由仓库扫描摄入，只走通知（提及）或已订阅 thread 轮询；observePulls=false、observeCi=false",
     "idempotency_key": "确定性触发 ID = key('github-comment', comment.html_url, comment.id, updated_at)（issue 正文为 key('github-issue', number)）；ticket 输入 ID = input:<ticket_id>:trigger:<trigger_id>；worker 消息 ID = assignment:<ticket_id> 或 assignment:<ticket_id>:<assignment_id>。代码中没有名为 request_id 的字段；#11 回执契约里的 request_id 目前是空串，尚无生成规则（见 open_questions）",
     "duplicate_behavior": "同一触发 ID 再次到达返回 duplicate：直接丢弃，不执行、不重复建单、不重复回执。同一 issue 的新评论是新的触发 ID，按新触发处理；同一评论被编辑会改变 updated_at，产生新触发 ID。已有存活 ticket 时，新评论并入该 ticket 作为输入，不重复开单",
     "data_plane": "D:/AgentShare/_TaskQueue/inbox/ 的 TASK-YYYYMMDD-NNN_短标题.json（12 个固定字段，状态由所在目录表示），详见 routing.task_envelope",
