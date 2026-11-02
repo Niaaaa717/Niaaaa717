@@ -17,3 +17,4 @@ Here are some ideas to get you started:
 - ⚡ Fun fact: ...
 -->
 本仓库用于 Amoo 语音派活桥测试。
+Amoo 派活链路验证 · 2026-11-02
