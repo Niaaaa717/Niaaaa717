@@ -1,5 +1,7 @@
 ## Hi there 👋
 
+本仓库用于 Amoo 语音派活桥测试。
+
 <!--
 **Niaaaa717/Niaaaa717** is a ✨ _special_ ✨ repository because its `README.md` (this file) appears on your GitHub profile.
 
